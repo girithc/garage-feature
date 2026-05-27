@@ -1,60 +1,183 @@
-# AI Photo Intake for Municipal Equipment Listings
+# Garage
 
-Garage-style demo showing how messy seller uploads can become structured, searchable listing data.
+AI-assisted listing intake demo for ambulances, fire apparatus, dump trucks, and heavy equipment. The app turns uploaded listing photos into structured categories, captions, and search labels, then uses that metadata to drive gallery organization and search.
 
-## What it demonstrates
+## What The Project Does
 
-- Listing creation for municipal equipment categories like Engines & Pumpers and Ladders / Aerials / Quints
-- Multi-photo upload flow
-- AI-style image analysis into broad gallery buckets such as `exterior`, `interior`, `engine`, `pump_panel`, and `documents`
-- Search-friendly captions and labels for each image
-- Gallery grouping on the listing detail page
-- Search across listing fields plus image-derived metadata
-- Human correction of predicted categories, stored for future model improvement
+- Creates listings for multiple apparatus and equipment categories
+- Lets a user start from preset demo asset packs or upload additional photos
+- Runs image analysis on photos and stores:
+  - primary category
+  - category list
+  - confidence
+  - caption
+  - labels
+  - raw model metadata
+- Streams analysis progress on the listing detail page
+- Groups galleries by detected visual category
+- Searches across listing fields plus photo-derived metadata
+- Exposes API endpoints for re-categorizing a photo and applying manual category corrections
 
-## Stack
+## Current Product Shape
 
-- Next.js App Router
-- React + TypeScript
+- Home page: create a listing from scratch or from preset demo packs in `assets/`
+- Listing detail page: live image analysis status, grouped gallery, captions, and slideshow views
+- Listings page: browse created listings with search
+- Search: keyword + embedding-based ranking over listings and photos
+
+The current presets are:
+
+- `Ambulance`
+- `Pumper Tanker`
+
+Supported asset categories in the taxonomy include:
+
+- Engines & Pumpers
+- Ladders / Aerials / Quints
+- Tankers / Tenders
+- Rescue Trucks / Squads
+- Brush Trucks / Minis
+- Ambulances
+- Dump Trucks
+- Heavy Equipment
+
+## Tech Stack
+
+- Next.js 15 App Router
+- React 19
+- TypeScript
 - Tailwind CSS
-- Prisma schema included for PostgreSQL production modeling
-- Demo JSON datastore for out-of-the-box local runs
+- Prisma
+- PostgreSQL via `NEON_URL`
+- OpenAI Responses API for image analysis
+- OpenAI embeddings for search ranking
 
-## Architecture
+## Important Runtime Notes
 
-```text
-src/
-  app/                  routing + API routes
-  features/             listing, photos, search product slices
-  server/ai/            image analysis prompt + services
-  server/taxonomy/      asset-to-photo category mapping
-  server/storage/       upload persistence
-  server/demo/          demo datastore + seeded records
-  server/db/            Prisma client entrypoint
-  components/ui/        reusable UI primitives
-```
+- The app now uses Prisma at runtime. It does not use a JSON datastore.
+- `NEON_URL` is required for listing and photo storage.
+- `OPENAI_API_KEY` is required for:
+  - image analysis
+  - semantic search embeddings
+- Uploaded files are written to `public/uploads/`.
+- Preset demo images are served from `assets/` through `/api/demo-assets/...`.
 
-## Local run
+## Local Setup
+
+1. Install dependencies:
 
 ```bash
 npm install
+```
+
+2. Set environment variables:
+
+```bash
+NEON_URL=postgresql://...
+OPENAI_API_KEY=sk-...
+```
+
+3. Push the Prisma schema to your database:
+
+```bash
+npx prisma db push
+```
+
+4. Start the app:
+
+```bash
 npm run dev
 ```
 
 Open [http://localhost:3000](http://localhost:3000).
 
-## Demo behavior
+## Database Notes
 
-- The app ships with seeded municipal equipment listings so search and gallery grouping work immediately.
-- New uploads are saved into `public/uploads`.
-- AI analysis currently uses a deterministic local heuristic service in `src/server/ai/imageAnalysis.service.ts` so the demo works without external credentials.
-- The Prisma schema matches the intended PostgreSQL production shape, but the runtime uses `data/demo-store.json` for simplicity.
+The Prisma schema lives in [prisma/schema.prisma](./prisma/schema.prisma) and currently models:
 
-## Suggested demo script
+- `Listing`
+- `Photo`
 
-1. Create a new Engine / Pumper listing.
-2. Upload exterior, cab, engine bay, pump panel, tire, and document photos.
-3. Show the AI-generated categories, captions, and labels on the upload page.
-4. Open the listing detail gallery and switch between grouped tabs.
-5. Search for `pump panel` or `interior dashboard`.
-6. Manually correct one photo category and explain that the correction is persisted for future training.
+The runtime store is implemented in [src/server/demo/demoStore.ts](./src/server/demo/demoStore.ts), which uses Prisma queries and transactions for listing creation, photo analysis state, corrections, and search indexing.
+
+## Seeding And Demo Data
+
+There are two different demo-data concepts in this repo:
+
+- Preset asset packs in `assets/` used by the create-listing flow
+- Prisma reset logic in `prisma/seed.ts`
+
+Running:
+
+```bash
+npm run seed
+```
+
+resets the Prisma-backed store using [src/server/demo/seedData.ts](./src/server/demo/seedData.ts).
+
+At the moment, `seedData.ts` is checked in with empty `listings` and `photos` arrays, so the main out-of-the-box demo path is to create a listing from one of the preset asset packs on the home page.
+
+## Analysis Flow
+
+There are two main analysis paths:
+
+- Creating a listing with preset or deferred-upload photos:
+  - photo records are created as pending
+  - the listing detail page opens an SSE stream to `/api/listings/[listingId]/analyze`
+  - progress updates stream into the UI until analysis completes or fails
+- Uploading photos from the dedicated uploader:
+  - files are saved
+  - analysis runs during the upload request
+  - the page refreshes with completed metadata
+
+Image analysis lives in [src/server/ai/imageAnalysis.service.ts](./src/server/ai/imageAnalysis.service.ts) and is now OpenAI-only. The previous heuristic fallback path has been removed.
+
+## Search
+
+Search is implemented in [src/features/search/server/search.queries.ts](./src/features/search/server/search.queries.ts).
+
+It combines:
+
+- keyword matching across listing fields
+- keyword matching across photo captions, labels, filenames, and categories
+- OpenAI embedding similarity for reranking
+
+If `OPENAI_API_KEY` is missing, semantic search cannot run.
+
+## API Surface
+
+Current API routes include:
+
+- `GET /api/listings`
+- `POST /api/listings`
+- `GET /api/listings/[listingId]`
+- `POST /api/listings/[listingId]/photos`
+- `GET /api/listings/[listingId]/analyze`
+- `POST /api/listings/[listingId]/analyze`
+- `GET /api/photos/[photoId]`
+- `PATCH /api/photos/[photoId]`
+- `POST /api/photos/[photoId]/categorize`
+- `GET /api/search?q=...`
+
+## Repo Shape
+
+```text
+src/
+  app/                  pages and API routes
+  components/           shared UI and layout
+  features/listings/    listing UI, queries, and actions
+  features/photos/      upload, analysis actions, and photo types
+  features/search/      search ranking and result types
+  server/ai/            OpenAI analysis and embeddings
+  server/db/            Prisma client setup
+  server/demo/          presets, Prisma-backed store wrapper, seed helpers
+  server/storage/       upload persistence
+  server/taxonomy/      asset-specific photo category rules
+prisma/
+  schema.prisma         Prisma schema
+  seed.ts               demo store reset entrypoint
+assets/
+  ...                   preset demo image packs
+public/uploads/
+  ...                   user-uploaded files at runtime
+```

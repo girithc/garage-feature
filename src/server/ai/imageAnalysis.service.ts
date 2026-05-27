@@ -5,6 +5,7 @@ import OpenAI from "openai";
 import { zodTextFormat } from "openai/helpers/zod";
 
 import type { PhotoAnalysis } from "@/features/photos/types";
+import { AppError } from "@/lib/errors";
 import { buildImageAnalysisPrompt } from "@/server/ai/prompts";
 import { ImageAnalysisSchema } from "@/server/ai/schemas";
 import {
@@ -13,80 +14,6 @@ import {
   normalizePhotoCategories,
   normalizePhotoCategory
 } from "@/server/taxonomy/taxonomy.service";
-
-const heuristics: Record<
-  string,
-  { category: string; caption: string; labels: string[]; keywords: string[] }
-> = {
-  pump_panel: {
-    category: "pump_panel",
-    caption:
-      "Side pump control panel with gauges, valves, and hose connections on a municipal apparatus.",
-    labels: ["pump panel", "gauges", "valves", "hose connections", "side controls"],
-    keywords: ["pump", "panel", "gauge", "valve", "hose", "intake", "control"]
-  },
-  engine: {
-    category: "engine",
-    caption:
-      "Open engine compartment showing powertrain components, hoses, and maintenance access points.",
-    labels: ["engine bay", "diesel engine", "hoses", "maintenance access"],
-    keywords: ["engine", "motor", "hood", "bay", "powertrain"]
-  },
-  interior: {
-    category: "interior",
-    caption:
-      "Cab interior with dashboard controls, instrumentation, and front seating visible.",
-    labels: ["interior dashboard", "driver cockpit", "switch panel", "front seats"],
-    keywords: ["interior", "cab", "dashboard", "cockpit", "seat", "radio"]
-  },
-  tires: {
-    category: "tires",
-    caption: "Wheel and tire assembly close-up with visible tread and rim details.",
-    labels: ["tires", "wheel assembly", "tread", "rim"],
-    keywords: ["tire", "wheel", "rim", "axle"]
-  },
-  documents: {
-    category: "documents",
-    caption:
-      "Printed listing documents or inspection paperwork photographed for marketplace review.",
-    labels: ["documents", "service records", "inspection paperwork"],
-    keywords: ["doc", "document", "record", "paper", "report", "pdf"]
-  },
-  ladder: {
-    category: "ladder",
-    caption:
-      "Apparatus photo centered on the aerial ladder assembly and upper body equipment.",
-    labels: ["truck with ladder", "aerial", "quint", "ladder assembly"],
-    keywords: ["ladder", "aerial", "quint"]
-  },
-  outriggers: {
-    category: "outriggers",
-    caption:
-      "Deployed stabilizer or outrigger assembly used for aerial or heavy equipment support.",
-    labels: ["outriggers", "stabilizers", "support pads", "controls"],
-    keywords: ["outrigger", "stabilizer", "pad", "support"]
-  },
-  hose_storage: {
-    category: "hose_storage",
-    caption: "Hose bed or hose storage area with folded line and rear access rails.",
-    labels: ["hose storage", "hose bed", "supply hose", "rear access"],
-    keywords: ["hose", "bed", "storage"]
-  },
-  equipment: {
-    category: "equipment",
-    caption:
-      "Storage compartment or mounted gear photo highlighting accessories and department equipment.",
-    labels: ["equipment compartment", "mounted tools", "nozzles", "adapters"],
-    keywords: ["equipment", "tool", "compartment", "shelf", "adapter", "nozzle"]
-  },
-  exterior: {
-    category: "exterior",
-    caption:
-      "Exterior listing photo showing the vehicle body, cab, side profile, and municipal apparatus layout.",
-    labels: ["exterior", "side profile", "municipal truck", "crew cab"],
-    keywords: ["front", "side", "rear", "exterior", "profile", "outside", "truck"]
-  }
-};
 
 const openaiClient = process.env.OPENAI_API_KEY
   ? new OpenAI({ apiKey: process.env.OPENAI_API_KEY })
@@ -98,59 +25,6 @@ const mimeTypeByExtension: Record<string, string> = {
   ".png": "image/png",
   ".webp": "image/webp"
 };
-
-function findHeuristicCategory(fileName: string, allowedCategories: readonly string[]) {
-  const normalized = fileName.toLowerCase();
-
-  for (const heuristic of Object.values(heuristics)) {
-    if (
-      allowedCategories.includes(heuristic.category) &&
-      heuristic.keywords.some((keyword) => normalized.includes(keyword))
-    ) {
-      return heuristic;
-    }
-  }
-
-  return null;
-}
-
-function buildFallbackAnalysis(params: {
-  fileName?: string | null;
-  assetCategory: string;
-  imageUrl: string;
-}): PhotoAnalysis {
-  const allowedCategories = getAllowedPhotoCategories(params.assetCategory);
-  const baseName = path.basename(params.fileName ?? params.imageUrl).toLowerCase();
-  const heuristic = findHeuristicCategory(baseName, allowedCategories);
-  const category = heuristic?.category ?? allowedCategories[0] ?? "unknown";
-  const labels = heuristic?.labels ?? [
-    params.assetCategory.replaceAll("_", " "),
-    "municipal equipment",
-    "listing photo",
-    category.replaceAll("_", " ")
-  ];
-  const caption =
-    heuristic?.caption ??
-    `Marketplace photo for ${params.assetCategory.replaceAll("_", " ")} focused on ${category.replaceAll("_", " ")}.`;
-
-  return {
-    category,
-    categories: [category],
-    confidence: heuristic ? 0.84 : 0.61,
-    caption,
-    labels,
-    aiModel: "demo-heuristic-v1",
-    aiRawResponse: {
-      mode: "fallback",
-      fileName: params.fileName,
-      assetCategory: params.assetCategory,
-      prompt: buildImageAnalysisPrompt({
-        assetCategory: params.assetCategory,
-        allowedCategories: [...allowedCategories]
-      })
-    }
-  };
-}
 
 async function resolveLocalImageDataUrl(imageUrl: string) {
   if (imageUrl.startsWith("http://") || imageUrl.startsWith("https://") || imageUrl.startsWith("data:")) {
@@ -183,13 +57,13 @@ async function buildOpenAIAnalysis(params: {
   fileName?: string | null;
 }) {
   if (!openaiClient) {
-    return null;
+    throw new AppError("OPENAI_API_KEY is required for image analysis.", 500);
   }
 
   const dataUrl = await resolveLocalImageDataUrl(params.imageUrl);
 
   if (!dataUrl) {
-    return null;
+    throw new AppError(`Unable to load image data for analysis: ${params.imageUrl}`, 400);
   }
 
   const allowedCategories = getAllowedPhotoCategories(params.assetCategory);
@@ -224,7 +98,7 @@ async function buildOpenAIAnalysis(params: {
   const parsed = response.output_parsed;
 
   if (!parsed) {
-    return null;
+    throw new AppError("Image analysis did not return structured output.", 502);
   }
 
   const normalized = ImageAnalysisSchema.parse(parsed);
@@ -254,29 +128,5 @@ export async function analyzeImage(params: {
   imageUrl: string;
   fileName?: string | null;
 }): Promise<PhotoAnalysis> {
-  const fallback = buildFallbackAnalysis(params);
-
-  try {
-    const openAIAnalysis = await buildOpenAIAnalysis(params);
-
-    if (openAIAnalysis) {
-      return openAIAnalysis;
-    }
-  } catch (error) {
-    const fallbackRawResponse =
-      typeof fallback.aiRawResponse === "object" && fallback.aiRawResponse !== null
-        ? fallback.aiRawResponse
-        : {};
-
-    return {
-      ...fallback,
-      aiRawResponse: {
-        ...fallbackRawResponse,
-        provider: "openai",
-        error: error instanceof Error ? error.message : "Unknown OpenAI error"
-      }
-    };
-  }
-
-  return fallback;
+  return buildOpenAIAnalysis(params);
 }
