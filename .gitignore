@@ -1,0 +1,15 @@
+# Local environment secrets
+.env
+.env.*
+!.env.example
+.DS_Store
+
+# Dependencies
+node_modules/
+
+# Next.js build output
+.next/
+.next-prev-build/
+
+# Local demo runtime data
+data/demo-store.json

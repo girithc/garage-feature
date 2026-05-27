@@ -1,0 +1,23 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  color-scheme: light;
+}
+
+html {
+  scroll-behavior: smooth;
+}
+
+body {
+  @apply bg-sand bg-garage-grid bg-[length:32px_32px] text-ink antialiased;
+}
+
+a {
+  @apply transition;
+}
+
+::selection {
+  @apply bg-ember text-white;
+}
