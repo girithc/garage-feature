@@ -6,7 +6,7 @@ declare global {
 }
 
 export function getPrismaClient() {
-  if (!process.env.DATABASE_URL) {
+  if (!process.env.NEON_URL) {
     return null;
   }
 

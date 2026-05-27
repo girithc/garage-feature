@@ -4,7 +4,7 @@ generator client {
 
 datasource db {
   provider = "postgresql"
-  url      = env("DATABASE_URL")
+  url      = env("NEON_URL")
 }
 
 model Listing {
@@ -23,18 +23,21 @@ model Listing {
 }
 
 model Photo {
-  id                 String   @id @default(cuid())
-  listingId          String
-  listing            Listing  @relation(fields: [listingId], references: [id])
-  url                String
-  originalFileName   String?
-  predictedCategory  String?
-  correctedCategory  String?
-  categoryConfidence Float?
-  caption            String?
-  labels             String[] @default([])
-  aiModel            String?
-  aiRawResponse      Json?
-  createdAt          DateTime @default(now())
-  updatedAt          DateTime @updatedAt
+  id                  String   @id @default(cuid())
+  listingId           String
+  listing             Listing  @relation(fields: [listingId], references: [id])
+  url                 String
+  originalFileName    String?
+  analysisStatus      String   @default("pending")
+  predictedCategory   String?
+  predictedCategories String[] @default([])
+  correctedCategory   String?
+  correctedCategories String[] @default([])
+  categoryConfidence  Float?
+  caption             String?
+  labels              String[] @default([])
+  aiModel             String?
+  aiRawResponse       Json?
+  createdAt           DateTime @default(now())
+  updatedAt           DateTime @updatedAt
 }

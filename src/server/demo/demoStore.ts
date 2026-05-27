@@ -1,9 +1,9 @@
-import { mkdir, readFile, writeFile } from "node:fs/promises";
-import path from "node:path";
+import { Prisma, type Listing, type Photo } from "@prisma/client";
 
 import type { ListingInput, ListingRecord } from "@/features/listings/types";
 import type { PhotoAnalysis, PhotoRecord } from "@/features/photos/types";
 import { AppError } from "@/lib/errors";
+import { getPrismaClient } from "@/server/db/prisma";
 import { demoSeedData } from "@/server/demo/seedData";
 
 type DemoStoreData = {
@@ -11,112 +11,211 @@ type DemoStoreData = {
   photos: PhotoRecord[];
 };
 
-const dataDirectory = path.join(process.cwd(), "data");
-const dataFilePath = path.join(dataDirectory, "demo-store.json");
-let mutationQueue = Promise.resolve();
+function getDb() {
+  const prisma = getPrismaClient();
 
-async function ensureStoreFile() {
-  await mkdir(dataDirectory, { recursive: true });
-
-  try {
-    await readFile(dataFilePath, "utf8");
-  } catch {
-    await writeFile(dataFilePath, JSON.stringify(demoSeedData, null, 2), "utf8");
+  if (!prisma) {
+    throw new AppError("NEON_URL is required for database access.", 500);
   }
+
+  return prisma;
 }
 
-async function readStore(): Promise<DemoStoreData> {
-  await ensureStoreFile();
-  const raw = await readFile(dataFilePath, "utf8");
-
-  try {
-    return JSON.parse(raw) as DemoStoreData;
-  } catch {
-    await writeStore(demoSeedData);
-    return structuredClone(demoSeedData) as DemoStoreData;
-  }
+function mapListingRecord(listing: Listing): ListingRecord {
+  return {
+    id: listing.id,
+    title: listing.title,
+    assetCategory: listing.assetCategory,
+    year: listing.year,
+    make: listing.make,
+    model: listing.model,
+    location: listing.location,
+    price: listing.price,
+    description: listing.description,
+    createdAt: listing.createdAt.toISOString(),
+    updatedAt: listing.updatedAt.toISOString()
+  };
 }
 
-async function writeStore(store: DemoStoreData) {
-  await writeFile(dataFilePath, JSON.stringify(store, null, 2), "utf8");
+function mapPhotoRecord(photo: Photo): PhotoRecord {
+  return {
+    id: photo.id,
+    listingId: photo.listingId,
+    url: photo.url,
+    originalFileName: photo.originalFileName,
+    analysisStatus: photo.analysisStatus as PhotoRecord["analysisStatus"],
+    predictedCategory: photo.predictedCategory,
+    predictedCategories: photo.predictedCategories,
+    correctedCategory: photo.correctedCategory,
+    correctedCategories: photo.correctedCategories,
+    categoryConfidence: photo.categoryConfidence,
+    caption: photo.caption,
+    labels: photo.labels,
+    aiModel: photo.aiModel,
+    aiRawResponse: photo.aiRawResponse,
+    createdAt: photo.createdAt.toISOString(),
+    updatedAt: photo.updatedAt.toISOString()
+  };
 }
 
-async function mutateStore<T>(mutator: (store: DemoStoreData) => Promise<T> | T): Promise<T> {
-  const run = mutationQueue.then(async () => {
-    const store = await readStore();
-    const result = await mutator(store);
-    await writeStore(store);
-    return result;
-  });
+function mapListingCreateInput(input: ListingInput): Prisma.ListingCreateInput {
+  return {
+    title: input.title,
+    assetCategory: input.assetCategory,
+    year: input.year ?? null,
+    make: input.make ?? null,
+    model: input.model ?? null,
+    location: input.location ?? null,
+    price: input.price ?? null,
+    description: input.description ?? null
+  };
+}
 
-  mutationQueue = run.then(
-    () => undefined,
-    () => undefined
-  );
-
-  return run;
+function mapPhotoCreateInput(params: {
+  listingId: string;
+  url: string;
+  originalFileName?: string | null;
+}) {
+  return {
+    listingId: params.listingId,
+    url: params.url,
+    originalFileName: params.originalFileName ?? null,
+    analysisStatus: "pending",
+    predictedCategory: "unknown",
+    predictedCategories: ["unknown"],
+    correctedCategory: null,
+    correctedCategories: [],
+    categoryConfidence: null,
+    caption: null,
+    labels: [],
+    aiModel: null,
+    aiRawResponse: Prisma.JsonNull
+  } satisfies Prisma.PhotoUncheckedCreateInput;
 }
 
 export async function resetDemoStore() {
-  await ensureStoreFile();
-  await writeStore(demoSeedData);
+  const prisma = getDb();
+
+  await prisma.$transaction(async (tx) => {
+    await tx.photo.deleteMany();
+    await tx.listing.deleteMany();
+
+    for (const listing of demoSeedData.listings) {
+      await tx.listing.create({
+        data: {
+          id: listing.id,
+          title: listing.title,
+          assetCategory: listing.assetCategory,
+          year: listing.year ?? null,
+          make: listing.make ?? null,
+          model: listing.model ?? null,
+          location: listing.location ?? null,
+          price: listing.price ?? null,
+          description: listing.description ?? null,
+          createdAt: new Date(listing.createdAt),
+          updatedAt: new Date(listing.updatedAt)
+        }
+      });
+    }
+
+    for (const photo of demoSeedData.photos) {
+      await tx.photo.create({
+        data: {
+          id: photo.id,
+          listingId: photo.listingId,
+          url: photo.url,
+          originalFileName: photo.originalFileName ?? null,
+          analysisStatus: photo.analysisStatus ?? "completed",
+          predictedCategory: photo.predictedCategory ?? null,
+          predictedCategories: photo.predictedCategories ?? [],
+          correctedCategory: photo.correctedCategory ?? null,
+          correctedCategories: photo.correctedCategories ?? [],
+          categoryConfidence: photo.categoryConfidence ?? null,
+          caption: photo.caption ?? null,
+          labels: photo.labels,
+          aiModel: photo.aiModel ?? null,
+          aiRawResponse:
+            photo.aiRawResponse === undefined ? Prisma.JsonNull : (photo.aiRawResponse as Prisma.InputJsonValue),
+          createdAt: new Date(photo.createdAt),
+          updatedAt: new Date(photo.updatedAt)
+        }
+      });
+    }
+  });
 }
 
 export async function listListings() {
-  const store = await readStore();
-  return store.listings.sort((a, b) => b.createdAt.localeCompare(a.createdAt));
+  const prisma = getDb();
+  const listings = await prisma.listing.findMany({
+    orderBy: {
+      createdAt: "desc"
+    }
+  });
+
+  return listings.map(mapListingRecord);
 }
 
 export async function getListingById(listingId: string) {
-  const store = await readStore();
-  return store.listings.find((listing) => listing.id === listingId) ?? null;
+  const prisma = getDb();
+  const listing = await prisma.listing.findUnique({
+    where: { id: listingId }
+  });
+
+  return listing ? mapListingRecord(listing) : null;
 }
 
 export async function createListing(input: ListingInput) {
-  return mutateStore((store) => {
-    const timestamp = new Date().toISOString();
-    const listing: ListingRecord = {
-      id: crypto.randomUUID(),
-      title: input.title,
-      assetCategory: input.assetCategory,
-      year: input.year ?? null,
-      make: input.make ?? null,
-      model: input.model ?? null,
-      location: input.location ?? null,
-      price: input.price ?? null,
-      description: input.description ?? null,
-      createdAt: timestamp,
-      updatedAt: timestamp
-    };
-
-    store.listings.unshift(listing);
-    return listing;
+  const prisma = getDb();
+  const listing = await prisma.listing.create({
+    data: mapListingCreateInput(input)
   });
+
+  return mapListingRecord(listing);
 }
 
 export async function updateListing(listingId: string, patch: Partial<ListingRecord>) {
-  return mutateStore((store) => {
-    const listing = store.listings.find((item) => item.id === listingId);
+  const prisma = getDb();
 
-    if (!listing) {
-      throw new AppError("Listing not found.", 404);
-    }
+  try {
+    const listing = await prisma.listing.update({
+      where: { id: listingId },
+      data: {
+        title: patch.title,
+        assetCategory: patch.assetCategory,
+        year: patch.year,
+        make: patch.make,
+        model: patch.model,
+        location: patch.location,
+        price: patch.price,
+        description: patch.description
+      }
+    });
 
-    Object.assign(listing, patch, { updatedAt: new Date().toISOString() });
-    return listing;
-  });
+    return mapListingRecord(listing);
+  } catch {
+    throw new AppError("Listing not found.", 404);
+  }
 }
 
 export async function listPhotosByListingId(listingId: string) {
-  const store = await readStore();
-  return store.photos
-    .filter((photo) => photo.listingId === listingId)
-    .sort((a, b) => a.createdAt.localeCompare(b.createdAt));
+  const prisma = getDb();
+  const photos = await prisma.photo.findMany({
+    where: { listingId },
+    orderBy: {
+      createdAt: "asc"
+    }
+  });
+
+  return photos.map(mapPhotoRecord);
 }
 
 export async function getPhotoById(photoId: string) {
-  const store = await readStore();
-  return store.photos.find((photo) => photo.id === photoId) ?? null;
+  const prisma = getDb();
+  const photo = await prisma.photo.findUnique({
+    where: { id: photoId }
+  });
+
+  return photo ? mapPhotoRecord(photo) : null;
 }
 
 export async function createPhoto(params: {
@@ -124,52 +223,36 @@ export async function createPhoto(params: {
   url: string;
   originalFileName?: string | null;
 }) {
-  return mutateStore((store) => {
-    const timestamp = new Date().toISOString();
-    const photo: PhotoRecord = {
-      id: crypto.randomUUID(),
-      listingId: params.listingId,
-      url: params.url,
-      originalFileName: params.originalFileName ?? null,
-      analysisStatus: "pending",
-      predictedCategory: "unknown",
-      predictedCategories: ["unknown"],
-      correctedCategory: null,
-      correctedCategories: [],
-      categoryConfidence: null,
-      caption: null,
-      labels: [],
-      aiModel: null,
-      aiRawResponse: null,
-      createdAt: timestamp,
-      updatedAt: timestamp
-    };
-
-    store.photos.push(photo);
-    return photo;
+  const prisma = getDb();
+  const photo = await prisma.photo.create({
+    data: mapPhotoCreateInput(params)
   });
+
+  return mapPhotoRecord(photo);
 }
 
 export async function updatePhotoAnalysis(photoId: string, analysis: PhotoAnalysis) {
-  return mutateStore((store) => {
-    const photo = store.photos.find((item) => item.id === photoId);
+  const prisma = getDb();
 
-    if (!photo) {
-      throw new AppError("Photo not found.", 404);
-    }
+  try {
+    const photo = await prisma.photo.update({
+      where: { id: photoId },
+      data: {
+        predictedCategory: analysis.category,
+        predictedCategories: analysis.categories,
+        analysisStatus: "completed",
+        categoryConfidence: analysis.confidence,
+        caption: analysis.caption,
+        labels: analysis.labels,
+        aiModel: analysis.aiModel,
+        aiRawResponse: analysis.aiRawResponse as Prisma.InputJsonValue
+      }
+    });
 
-    photo.predictedCategory = analysis.category;
-    photo.predictedCategories = analysis.categories;
-    photo.analysisStatus = "completed";
-    photo.categoryConfidence = analysis.confidence;
-    photo.caption = analysis.caption;
-    photo.labels = analysis.labels;
-    photo.aiModel = analysis.aiModel;
-    photo.aiRawResponse = analysis.aiRawResponse;
-    photo.updatedAt = new Date().toISOString();
-
-    return photo;
-  });
+    return mapPhotoRecord(photo);
+  } catch {
+    throw new AppError("Photo not found.", 404);
+  }
 }
 
 export async function updatePhotoCorrection(
@@ -177,53 +260,95 @@ export async function updatePhotoCorrection(
   correctedCategory: string | null,
   correctedCategories?: string[]
 ) {
-  return mutateStore((store) => {
-    const photo = store.photos.find((item) => item.id === photoId);
+  const prisma = getDb();
 
-    if (!photo) {
-      throw new AppError("Photo not found.", 404);
-    }
+  try {
+    const photo = await prisma.photo.update({
+      where: { id: photoId },
+      data: {
+        correctedCategory,
+        correctedCategories: correctedCategories ?? (correctedCategory ? [correctedCategory] : [])
+      }
+    });
 
-    photo.correctedCategory = correctedCategory;
-    photo.correctedCategories = correctedCategories ?? (correctedCategory ? [correctedCategory] : []);
-    photo.updatedAt = new Date().toISOString();
-
-    return photo;
-  });
+    return mapPhotoRecord(photo);
+  } catch {
+    throw new AppError("Photo not found.", 404);
+  }
 }
 
 export async function claimPendingPhotosForAnalysis(listingId: string) {
-  return mutateStore((store) => {
-    const pendingPhotos = store.photos.filter(
-      (photo) =>
-        photo.listingId === listingId &&
-        (photo.analysisStatus === "pending" || photo.analysisStatus === "processing")
-    );
+  const prisma = getDb();
 
-    pendingPhotos.forEach((photo) => {
-      photo.analysisStatus = "processing";
-      photo.updatedAt = new Date().toISOString();
+  return prisma.$transaction(async (tx) => {
+    const pendingPhotos = await tx.photo.findMany({
+      where: {
+        listingId,
+        analysisStatus: {
+          in: ["pending", "processing"]
+        }
+      },
+      orderBy: {
+        createdAt: "asc"
+      }
     });
 
-    return pendingPhotos.map((photo) => ({ ...photo }));
+    if (!pendingPhotos.length) {
+      return [];
+    }
+
+    await tx.photo.updateMany({
+      where: {
+        id: {
+          in: pendingPhotos.map((photo) => photo.id)
+        }
+      },
+      data: {
+        analysisStatus: "processing"
+      }
+    });
+
+    const refreshedPhotos = await tx.photo.findMany({
+      where: {
+        id: {
+          in: pendingPhotos.map((photo) => photo.id)
+        }
+      },
+      orderBy: {
+        createdAt: "asc"
+      }
+    });
+
+    return refreshedPhotos.map(mapPhotoRecord);
   });
 }
 
 export async function markPhotoAnalysisFailed(photoId: string) {
-  return mutateStore((store) => {
-    const photo = store.photos.find((item) => item.id === photoId);
+  const prisma = getDb();
 
-    if (!photo) {
-      throw new AppError("Photo not found.", 404);
-    }
+  try {
+    const photo = await prisma.photo.update({
+      where: { id: photoId },
+      data: {
+        analysisStatus: "failed"
+      }
+    });
 
-    photo.analysisStatus = "failed";
-    photo.updatedAt = new Date().toISOString();
-    return photo;
-  });
+    return mapPhotoRecord(photo);
+  } catch {
+    throw new AppError("Photo not found.", 404);
+  }
 }
 
-export async function getSearchIndex() {
-  const store = await readStore();
-  return store;
+export async function getSearchIndex(): Promise<DemoStoreData> {
+  const prisma = getDb();
+  const [listings, photos] = await Promise.all([
+    prisma.listing.findMany(),
+    prisma.photo.findMany()
+  ]);
+
+  return {
+    listings: listings.map(mapListingRecord),
+    photos: photos.map(mapPhotoRecord)
+  };
 }
